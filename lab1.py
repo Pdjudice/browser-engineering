@@ -1,8 +1,6 @@
 import socket
 import ssl
 from enum import Enum
-import html
-import re
 import gzip
 import time
 
@@ -13,6 +11,7 @@ class Scheme(str, Enum):
     FILE = "file"
     DATA = "data"
     VIEW_SOURCE = "view-source"
+    ABOUT = "about"
 
     @property
     def default_port(self) -> int | None:
@@ -37,26 +36,32 @@ cache: dict = {}
 class URL:
 
     def __init__(self, url: str):
-        self.full_url = url
-        self.is_view_source = False
+        try:
+            self.full_url = url
+            self.is_view_source = False
 
-        scheme_str, hier_part = url.split(":", 1)
-        self.scheme = Scheme.of(scheme_str)
-
-        if self.scheme == Scheme.VIEW_SOURCE:
-            scheme_str, hier_part = hier_part.split(":", 1)
+            scheme_str, hier_part = url.split(":", 1)
             self.scheme = Scheme.of(scheme_str)
-            self.is_view_source = True
 
-        match self.scheme:
-            case Scheme.FILE:
-                self._build_file(hier_part)
-            case Scheme.DATA:
-                self._build_data(hier_part)
-            case _ if self.scheme.is_http:
-                self._build_authority(hier_part)
-            case _:
-                raise ValueError(f"Unsupported scheme: {self.scheme!r}")
+            if self.scheme == Scheme.VIEW_SOURCE:
+                scheme_str, hier_part = hier_part.split(":", 1)
+                self.scheme = Scheme.of(scheme_str)
+                self.is_view_source = True
+
+            match self.scheme:
+                case Scheme.FILE:
+                    self._build_file(hier_part)
+                case Scheme.DATA:
+                    self._build_data(hier_part)
+                case Scheme.ABOUT:
+                    "Do nothing"
+                case _ if self.scheme.is_http:
+                    self._build_authority(hier_part)
+                case _:
+                    raise ValueError(f"Unsupported scheme: {self.scheme!r}")
+        except:
+            print("Malformed URL found, falling back to about:blank")
+            self.__init__("about:blank")
 
     def _build_data(self, hier_part: str) -> None:
 
@@ -102,6 +107,9 @@ class URL:
             return self._request_file()
         if self.scheme == Scheme.DATA:
             return self.data, self.content_type
+        if self.scheme == Scheme.ABOUT:
+            # Only about:blank is supported
+            return "", "text/plain"
 
     def _request_file(self) -> tuple[str, str]:
         with open(self.url, "r") as file:
@@ -150,7 +158,7 @@ class URL:
             s = self._connect_socket()
             s.send(request.encode("utf8"))
 
-        response = s.makefile("rb")
+        response = s.makefile("rb", encoding="utf-8")
 
         result = self._parse_http_response(response, n_redirects)
         open_connections[key] = s
@@ -231,21 +239,46 @@ class URL:
         return "{}: {}\r\n".format(key, value)
 
 
-def show_html(body):
-    text = re.sub(r"<[^>]*>", "", body)
-    print(html.unescape(text), end="")
+HTML_ENTITIES = {
+    "&lt;": "<",
+    "&gt;": ">",
+    "&amp;": "&",
+    "&quot;": '"',
+    "&apos;": "'",
+}
 
 
-def show_text(body):
-    print(body)
+def lex(body):
+    in_tag = False
+    i = 0
+    text = ""
+    while i < len(body):
+        c = body[i]
+        if c == "<":
+            in_tag = True
+        elif c == ">":
+            in_tag = False
+        elif not in_tag:
+            if c == "&":
+                end = body.find(";", i)
+                if end != -1:
+                    entity = body[i : end + 1]
+                    text += HTML_ENTITIES.get(entity, entity)
+                    i = end + 1
+                    continue
+            text += c
+        i += 1
+    return text
 
 
 def load(url):
     body, content_type = url.request()
     if content_type == "text/html":
-        show_html(body)
+        text = lex(body)
+        for c in text:
+            print(c, end="")
     else:
-        show_text(body)
+        print(body)
 
 
 if __name__ == "__main__":
